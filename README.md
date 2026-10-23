@@ -9,7 +9,7 @@ ReplenishIQ is a demo copilot that drafts a store's weekly replenishment order. 
 
 A **human approves** the plan before any purchase order is written. An LLM (Groq) handles language: it parses the request, extracts policy rules, and explains the result. **Every number comes from a tool or the solver.**
 
-> This is a portfolio/interview project that runs on synthetic data. It is not a production system, and it makes no claims about business impact.
+> This is a portfolio project that runs on synthetic data. It is not a production system, and it makes no claims about business impact.
 
 ## Architecture
 
