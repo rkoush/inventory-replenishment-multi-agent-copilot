@@ -6,12 +6,13 @@ only those numbers, which keeps the prompt tiny and the explanation grounded.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents import rules
-from agents.llm import llm_name
+from agents.llm import llm_name, strip_reasoning
 from agents.state import ReplenishState
 
 SYSTEM = """You are a retail replenishment analyst writing for a store manager.
@@ -47,6 +48,14 @@ def render_table(plan: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def escape_dollars(text: str) -> str:
+    """Escape `$` so Jupyter/Colab Markdown doesn't render "$4,000 ... $5,000" as LaTeX.
+
+    Use only for notebook display; the CLI prints the raw report.
+    """
+    return re.sub(r"(?<!\\)\$", r"\\$", text)
+
+
 def make_report(llm: Any):
     def report(state: ReplenishState) -> dict[str, Any]:
         if not state.get("order_plan"):
@@ -56,7 +65,9 @@ def make_report(llm: Any):
         warnings: list[str] = []
         source = llm_name(llm)
         try:
-            narrative = str(llm.invoke([SystemMessage(SYSTEM), HumanMessage(prompt)]).content).strip()
+            narrative = strip_reasoning(str(llm.invoke([SystemMessage(SYSTEM), HumanMessage(prompt)]).content))
+            if not narrative:  # e.g. reasoning used up the whole token budget
+                raise ValueError("empty LLM reply")
         except Exception as exc:
             warnings.append(f"Report LLM failed ({type(exc).__name__}); used template summary.")
             narrative = rules.explain_plan(json.loads(payload))

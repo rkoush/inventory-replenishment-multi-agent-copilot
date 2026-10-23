@@ -24,11 +24,13 @@ CHROMA_DIR = Path(os.getenv("CHROMA_DIR", ROOT / "chroma_db"))
 CHROMA_COLLECTION = "replenishment_policies"
 
 # LLM (Groq)
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "") or "openai/gpt-oss-120b"
 GROQ_TEMPERATURE = float(os.getenv("GROQ_TEMPERATURE", "0"))
-# Optional cheaper/faster model for the supervisor's routing step (e.g. llama-3.1-8b-instant)
-GROQ_ROUTER_MODEL = os.getenv("GROQ_ROUTER_MODEL", "") or GROQ_MODEL
-GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "768"))  # cap output tokens (free tier friendly)
+# Cheaper/faster model for the supervisor's routing step
+GROQ_ROUTER_MODEL = os.getenv("GROQ_ROUTER_MODEL", "") or "openai/gpt-oss-20b"
+GROQ_MAX_TOKENS = int(os.getenv("GROQ_MAX_TOKENS", "") or "1024")  # cap output tokens incl. reasoning tokens
+# Reasoning models (gpt-oss, qwen3): keep thinking short so it doesn't eat the output budget
+GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "") or "low"
 GROQ_MAX_RETRIES = int(os.getenv("GROQ_MAX_RETRIES", "4"))  # SDK retries 429/5xx with exponential backoff
 
 # MCP inventory server (Streamable HTTP)

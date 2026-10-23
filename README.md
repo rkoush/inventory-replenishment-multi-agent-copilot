@@ -43,7 +43,7 @@ flowchart TD
 | RAG | Chroma with local all-MiniLM-L6-v2 (ONNX) embeddings, one chunk per markdown section | `rag/` |
 | Forecast | Day-of-week seasonality plus exponential smoothing, with a 7-day backtest WAPE | `agents/forecasting.py` |
 | Optimization | PuLP + CBC MILP | `agents/milp.py` |
-| LLM | Groq via `langchain-groq` (default `llama-3.3-70b-versatile`) | `agents/llm.py` |
+| LLM | Groq via `langchain-groq` (default `openai/gpt-oss-120b`, router `openai/gpt-oss-20b`) | `agents/llm.py` |
 
 ### MCP tools
 `get_stock`, `list_store_inventory`, `list_low_stock`, `get_sales_history`, `get_supplier_terms` are read-only (annotated `readOnlyHint`). `create_purchase_order` is the only write tool, and the graph calls it only after a human approves. The server checks MOQ and case-pack rules again on its own and does not trust the agent.
@@ -96,9 +96,12 @@ The Groq free tier needs **no billing or credits**, but it has **rate limits** (
 
 - **3 LLM calls per run:** supervisor plan, policy extraction, and report narrative. Revise loops re-run only the solver, so they make no extra LLM calls. Forecasting, optimization, and tool calls never use the LLM.
 - **Short prompts.** The policy agent sends only the ~6 retrieved policy sections (about 1.3k characters). The report gets a compact JSON summary of the plan. Sales history never reaches the LLM.
-- `max_tokens=768` (`GROQ_MAX_TOKENS`), `temperature=0`, and `max_retries=4`. The Groq SDK backs off exponentially on 429 and 5xx errors.
+- **Models:** `GROQ_MODEL` defaults to `openai/gpt-oss-120b` (policy extraction and report). `GROQ_ROUTER_MODEL` defaults to `openai/gpt-oss-20b` (supervisor plan). Both can be overridden with env vars. Other free-tier options include `qwen/qwen3.8-27b` and `meta-llama/llama-4-scout-17b-16e-instruct`. Groq retires models regularly (`llama-3.3-70b-versatile` and `llama-3.1-8b-instant` were shut down on Aug 16, 2026), so check https://console.groq.com/docs/deprecations if you get a `NotFoundError`.
+- **Reasoning models:** gpt-oss and qwen3 reason before answering, and reasoning tokens count toward `max_tokens`. The client sets `reasoning_effort="low"` (`GROQ_REASONING_EFFORT`) and hides the reasoning: `include_reasoning=False` for gpt-oss, `reasoning_format="hidden"` for qwen3. Other models get neither parameter. Structured steps use Groq JSON-schema structured outputs (`strict` mode with constrained decoding on gpt-oss). Other models use tool calling.
+- `max_tokens=1024` (`GROQ_MAX_TOKENS`), `temperature=0`, and `max_retries=4`. The Groq SDK backs off exponentially on 429 and 5xx errors.
 - If a call still fails (rate limit, timeout, or malformed output), that step falls back to the rule-based version, adds a warning to the run, and the run continues.
-- **If you hit limits,** switch to `llama-3.1-8b-instant`. You can do this for the cheap routing step only (`GROQ_ROUTER_MODEL=llama-3.1-8b-instant`) or for everything (`GROQ_MODEL=llama-3.1-8b-instant`).
+- **If you hit limits,** use the smaller `openai/gpt-oss-20b` for everything (`GROQ_MODEL=openai/gpt-oss-20b`). Per-model rate limits are listed at https://console.groq.com/docs/rate-limits.
+- **Smoke test:** the notebook makes 1 tiny extra call (`agents.llm.smoke_test`) before the run. It prints whether Groq is reachable with the chosen model, so a bad key or retired model shows up right away instead of as a silent fallback.
 
 ## Design decisions and tradeoffs
 - **Supervisor with deterministic guardrails rather than free-form agent chat.** The LLM proposes a plan once. Code then validates the store, budget, and horizon, fixes the dependency order, routes to the first worker whose output is missing, and caps the run at 12 steps. This makes runs predictable, cheap, and easy to debug. The cost is less flexibility than a ReAct loop.

@@ -7,6 +7,8 @@ run and tested without an API key (`--offline`).
 from __future__ import annotations
 
 import os
+import re
+from functools import lru_cache
 from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, BaseMessage
@@ -76,26 +78,118 @@ def _last_text(messages: list[BaseMessage] | str) -> str:
 
 
 # ------------------------------------------------------------- factory
+def is_gpt_oss(model: str) -> bool:
+    return model.startswith("openai/gpt-oss")
+
+
+def is_qwen_reasoning(model: str) -> bool:
+    return model.startswith("qwen/qwen3")
+
+
+def reasoning_kwargs(model: str) -> dict[str, Any]:
+    """Groq reasoning controls, only for models that accept them (others would 400).
+
+    - gpt-oss: `reasoning_effort` is supported, `reasoning_format` is NOT; reasoning is
+      dropped from the response with `include_reasoning=False` (passed via model_kwargs,
+      since ChatGroq has no field for it; the groq SDK accepts it).
+    - qwen3: `reasoning_effort` + `reasoning_format="hidden"` (final answer only).
+    Reasoning tokens still count towards max_tokens, hence the low effort.
+    """
+    effort = config.GROQ_REASONING_EFFORT
+    if is_gpt_oss(model):
+        return {"reasoning_effort": effort, "model_kwargs": {"include_reasoning": False}}
+    if is_qwen_reasoning(model):
+        return {"reasoning_effort": effort, "reasoning_format": "hidden"}
+    return {}
+
+
+@lru_cache(maxsize=1)
+def _chat_groq_cls():
+    from langchain_groq import ChatGroq
+
+    class _ChatGroq(ChatGroq):
+        """ChatGroq that omits unset (None) params instead of sending JSON nulls.
+
+        langchain-groq always sends `reasoning_format: null`; Groq treats
+        `reasoning_format` and `include_reasoning` as mutually exclusive, so we don't
+        send keys we never set.
+        """
+
+        @property
+        def _default_params(self) -> dict[str, Any]:
+            return {k: v for k, v in super()._default_params.items() if v is not None}
+
+    return _ChatGroq
+
+
 def get_llm(offline: bool = False, model: str | None = None):
     """Return a Groq chat model, or the offline stand-in if requested / no key is set.
 
-    Free-tier friendly: small max_tokens, temperature 0, and the Groq SDK's built-in
-    exponential backoff on 429 rate-limit responses (max_retries).
+    Free-tier friendly: capped max_tokens, temperature 0, low reasoning effort, and the
+    Groq SDK's built-in exponential backoff on 429 rate-limit responses (max_retries).
     """
     if offline or not os.getenv("GROQ_API_KEY"):
         return RuleBasedLLM()
-    from langchain_groq import ChatGroq
-
     model = model or config.GROQ_MODEL
-    llm = ChatGroq(
+    llm = _chat_groq_cls()(
         model=model,
         temperature=config.GROQ_TEMPERATURE,
         max_tokens=config.GROQ_MAX_TOKENS,
         max_retries=config.GROQ_MAX_RETRIES,
         timeout=60,
+        **reasoning_kwargs(model),
     )
     llm.name = f"groq:{model}"
     return llm
+
+
+def _strict_schema(schema: type[BaseModel]) -> dict[str, Any]:
+    """JSON schema for Groq strict mode: all fields required, closed objects, no defaults."""
+    from langchain_core.utils.function_calling import convert_to_json_schema
+
+    def clean(node: Any) -> Any:
+        if isinstance(node, dict):
+            return {k: clean(v) for k, v in node.items() if k != "default"}
+        if isinstance(node, list):
+            return [clean(v) for v in node]
+        return node
+
+    return clean(convert_to_json_schema(schema, strict=True))
+
+
+def structured(llm: Any, schema: type[BaseModel]):
+    """Runnable returning a `schema` instance.
+
+    gpt-oss / qwen3 on Groq: JSON-schema structured outputs (strict, constrained decoding
+    where Groq supports it). Other chat models: tool calling. Offline stand-ins: their own.
+    Callers wrap this in try/except and fall back to rules on any failure.
+    """
+    model = getattr(llm, "model_name", "") or ""
+    if is_gpt_oss(model) or is_qwen_reasoning(model):
+        runnable = llm.with_structured_output(_strict_schema(schema), method="json_schema", strict=True)
+        return runnable | RunnableLambda(lambda d: schema.model_validate(d))
+    return llm.with_structured_output(schema)
+
+
+_THINK = re.compile(r"<think>.*?</think>", re.S)
+
+
+def strip_reasoning(text: str) -> str:
+    """Remove any inline <think>...</think> block (raw reasoning format)."""
+    return _THINK.sub("", text or "").strip()
+
+
+def smoke_test(model: str | None = None) -> tuple[bool, str]:
+    """One tiny Groq call to check the key + model before a run. Returns (ok, message)."""
+    if not os.getenv("GROQ_API_KEY"):
+        return False, "GROQ_API_KEY not set -> offline (rule-based) mode"
+    model = model or config.GROQ_MODEL
+    try:
+        reply = get_llm(model=model).invoke("Reply with OK", max_tokens=256)
+        text = strip_reasoning(str(reply.content))
+        return True, f"Groq reachable, model={model}, reply={text[:40]!r}"
+    except Exception as exc:  # noqa: BLE001 - surface any failure (NotFound, auth, 429, ...)
+        return False, f"Groq call FAILED for model={model}: {type(exc).__name__}: {str(exc)[:200]}"
 
 
 def llm_name(llm: Any) -> str:

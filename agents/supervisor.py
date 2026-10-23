@@ -15,7 +15,7 @@ from langgraph.types import Command
 
 import config
 from agents import rules
-from agents.llm import RequestPlan, llm_name
+from agents.llm import RequestPlan, llm_name, structured
 from agents.state import ReplenishState
 
 WORKERS = rules.WORKERS
@@ -61,7 +61,7 @@ def make_supervisor(llm: Any):
             msgs = [SystemMessage(SYSTEM), HumanMessage(state["request"])]
             warnings: list[str] = []
             try:
-                parsed = llm.with_structured_output(RequestPlan).invoke(msgs)
+                parsed = structured(llm, RequestPlan).invoke(msgs)
             except Exception as exc:  # LLM down / bad JSON -> deterministic fallback
                 warnings.append(f"Supervisor LLM failed ({type(exc).__name__}); used rule-based parse.")
                 parsed = RequestPlan(**rules.parse_request(state["request"]))

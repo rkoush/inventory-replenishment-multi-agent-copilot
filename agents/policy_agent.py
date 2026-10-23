@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 import config
 from agents import rules
-from agents.llm import PolicyExtraction, llm_name
+from agents.llm import PolicyExtraction, llm_name, structured
 from agents.state import ReplenishState
 from rag.retriever import retrieve
 
@@ -85,7 +85,7 @@ def make_policy_agent(llm: Any):
         warnings: list[str] = []
         source = llm_name(llm)
         try:
-            ext = llm.with_structured_output(PolicyExtraction).invoke(
+            ext = structured(llm, PolicyExtraction).invoke(
                 [SystemMessage(SYSTEM), HumanMessage(f"Policy excerpts:\n\n{context}")]
             )
         except Exception as exc:
