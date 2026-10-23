@@ -28,9 +28,10 @@ def db_path(tmp_path_factory) -> Path:
     return write_db(build_frames(), tmp_path_factory.mktemp("data") / "test.db")
 
 
-def _start_server(db_path: Path, token: str = ""):
+def _start_server(db_path: Path, token: str = "", **extra_env: str):
     port = _free_port()
-    env = {**os.environ, "REPLENISHIQ_DB": str(db_path), "MCP_PORT": str(port), "MCP_AUTH_TOKEN": token}
+    env = {**os.environ, "REPLENISHIQ_DB": str(db_path), "MCP_PORT": str(port), "MCP_AUTH_TOKEN": token,
+           "MCP_AUTH": "", **extra_env}
     proc = subprocess.Popen([sys.executable, "-m", "mcp_servers.inventory_server"], cwd=ROOT, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(100):
@@ -53,6 +54,24 @@ def mcp_url(db_path):
 @pytest.fixture(scope="session")
 def mcp_url_auth(db_path):
     proc, url = _start_server(db_path, token="test-secret")
+    yield url
+    proc.terminate()
+
+
+@pytest.fixture(scope="session")
+def jwt_tokens(tmp_path_factory) -> dict[str, str]:
+    """RS256 keypair + planner/approver/auditor tokens in a temp secrets dir."""
+    from scripts.mint_tokens import mint
+
+    secrets = tmp_path_factory.mktemp("secrets")
+    tokens = mint(secrets=secrets, hours=1)
+    tokens["_secrets_dir"] = str(secrets)
+    return tokens
+
+
+@pytest.fixture(scope="session")
+def mcp_url_jwt(db_path, jwt_tokens):
+    proc, url = _start_server(db_path, MCP_AUTH="jwt", REPLENISHIQ_SECRETS=jwt_tokens["_secrets_dir"])
     yield url
     proc.terminate()
 

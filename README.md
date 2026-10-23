@@ -38,7 +38,7 @@ flowchart TD
 | Component | Tech | Where |
 |---|---|---|
 | Orchestration | LangGraph `StateGraph`, `Command` routing, `interrupt` + `MemorySaver` | `agents/graph.py`, `agents/supervisor.py` |
-| Tools | FastMCP server (Streamable HTTP at `/mcp`, optional bearer token) | `mcp_servers/inventory_server.py` |
+| Tools | FastMCP server (Streamable HTTP at `/mcp`, JWT role/scope auth) | `mcp_servers/inventory_server.py` |
 | Tool client | `langchain-mcp-adapters` `MultiServerMCPClient` | `agents/mcp_client.py` |
 | RAG | Chroma with local all-MiniLM-L6-v2 (ONNX) embeddings, one chunk per markdown section | `rag/` |
 | Forecast | Day-of-week seasonality plus exponential smoothing, with a 7-day backtest WAPE | `agents/forecasting.py` |
@@ -81,7 +81,12 @@ python -m app.run_demo                     # interactive approve / reject / revi
 python -m app.run_demo --offline --decision revise:4000,approve   # no LLM, scripted decisions
 python -m pytest -q
 ```
-Turn on MCP auth by setting the same `MCP_AUTH_TOKEN` for both the server and the client. The client then sends `Authorization: Bearer <token>`.
+To run with role-based JWT auth, see [Authentication & authorization](#authentication--authorization):
+```bash
+python -m scripts.mint_tokens                            # .secrets/ (gitignored): keypair + 3 role tokens
+MCP_AUTH=jwt python -m mcp_servers.inventory_server &
+MCP_AUTH=jwt python -m app.run_demo --offline --decision approve
+```
 
 ### Run locally with Docker (optional)
 Colab never uses the Dockerfile; it only matters when you run Docker yourself. Locally, the MCP server and the agent app each run in their own container, the same way they would scale separately in production:
@@ -90,6 +95,22 @@ cp .env.example .env            # add GROQ_API_KEY (optional)
 docker compose up -d mcp        # MCP server on http://localhost:8000/mcp
 docker compose run --rm app     # runs the demo against the containerized MCP server
 ```
+
+## Authentication & authorization
+`MCP_AUTH=jwt` turns on JWT auth. The MCP server checks every request's RS256 bearer token (signature, issuer `replenishiq-local-idp`, audience `replenishiq-mcp`, expiry) with FastMCP's `JWTVerifier`. Then FastMCP's `AuthMiddleware` checks the tool's scope (`mcp_servers/auth.py`):
+
+| Role | Scopes | Tools it can see and call |
+|---|---|---|
+| planner | `inventory:read` | `get_stock`, `list_store_inventory`, `list_low_stock`, `get_sales_history`, `get_supplier_terms` |
+| approver | `inventory:read po:write` | all of the planner's tools + `create_purchase_order` |
+| auditor | `po:read` | `list_purchase_orders` |
+
+- **Deny by default.** Every tool has to be listed in `TOOL_SCOPES`, otherwise nobody can call it. `tools/list` hides tools the caller has no scope for. Calling one anyway returns `forbidden: missing scope po:write for tool 'create_purchase_order' (caller=planner, ...)`. A request with no token, or a token signed by another key, gets HTTP 401.
+- **Least privilege in the agent.** The inventory and demand agents connect with the **planner** token, so they never even see the write tool. Only `place_order` uses the **approver** token, and it runs only after the human-approval interrupt. Trace lines show which credential each step used, e.g. `place_order: MCP create_purchase_order as role=approver scopes=inventory:read po:write -> PO-...`.
+- **Local keys and tokens.** `scripts/mint_tokens.py` stands in for the identity provider. It generates the keypair and 3 tokens (8 h by default, `--hours`) into `.secrets/`, which is gitignored and never committed. The server only needs `jwt_public.pem`.
+- **Other modes.** `MCP_AUTH=none` (the default, used by most tests) and `MCP_AUTH=static` (one shared `MCP_AUTH_TOKEN` with all scopes, kept for backward compatibility).
+
+**Production auth.** In production you wouldn't mint tokens locally. They would come from the enterprise IdP (Entra ID, Okta, Ping, ...) via OAuth 2.1, and the MCP server would be a pure *resource server*: it validates tokens against the IdP's JWKS (`JWTVerifier(jwks_uri=...)`) and never issues them. The agent would call MCP with the user's delegated token (on-behalf-of) for actions taken for a person, such as approving a PO, so the approver identity comes from the token rather than a free-text field. For service actions, such as nightly reads, it would use client-credentials tokens. Tokens are short-lived (minutes, not hours) and audience-bound to the MCP server. Every tool call is audit-logged with subject, scopes, tool, arguments, and result. Scopes or roles map to IdP groups.
 
 ## Staying within Groq's free tier
 The Groq free tier needs **no billing or credits**, but it has **rate limits** (requests and tokens per minute and per day, which vary by model). This project is built to stay well under them:
@@ -122,20 +143,20 @@ The Groq free tier needs **no billing or credits**, but it has **rate limits** (
 - Promotions apply their uplift to the whole planning horizon instead of exact promo dates.
 - Single-echelon (store-level only), with deterministic lead times and no supplier capacity or perishability modeling.
 - MemorySaver is in-memory. Production would use a persistent checkpointer such as Postgres.
-- The bearer-token auth is a static token, for demo use only.
+- JWT auth uses a locally generated keypair and long-ish (8 h) tokens for convenience. There's no IdP, token refresh, revocation, or audit log store.
 - Groq structured-output quality depends on the model. The fallbacks keep runs going, but check the warnings.
 
 ## Next steps
-Containerize, then deploy to Kubernetes. Add OAuth 2.1 for MCP. Add LangSmith/OTel tracing, a persistent checkpointer, and a real tool-calling (ReAct) inventory agent for ad-hoc questions. Add multi-store optimization and supplier capacity constraints.
+Containerize, then deploy to Kubernetes. Replace the local token minting with OAuth 2.1 from the enterprise IdP. Add LangSmith/OTel tracing, a persistent checkpointer, and a real tool-calling (ReAct) inventory agent for ad-hoc questions. Add multi-store optimization and supplier capacity constraints.
 
 ## Repo layout
 ```
 agents/        supervisor, workers, MILP, forecasting, LLM wrappers, graph
-mcp_servers/   FastMCP inventory server
+mcp_servers/   FastMCP inventory server + role/scope auth
 rag/           index builder + retriever
-scripts/       synthetic data generator
+scripts/       synthetic data generator, local JWT minting
 data/policies/ policy markdown docs (RAG corpus)
 app/           CLI demo
 notebooks/     Colab demo
-tests/         optimizer, MCP (incl. auth), end-to-end offline graph
+tests/         optimizer, MCP, JWT scopes, report checks, end-to-end offline graph
 ```

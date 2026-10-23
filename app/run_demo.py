@@ -62,7 +62,7 @@ async def run(request: str, offline: bool, decision: str | None) -> dict:
     router = get_llm(offline=offline, model=config.GROQ_ROUTER_MODEL)
     graph = build_graph(llm=llm, router_llm=router)
     cfg = {"configurable": {"thread_id": f"demo-{uuid.uuid4().hex[:8]}"}}
-    print(f"Request: {request}\nLLM: {getattr(llm, 'name', llm)} | MCP: {config.MCP_SERVER_URL}\n")
+    print(f"Request: {request}\nLLM: {getattr(llm, 'name', llm)} | MCP: {config.MCP_SERVER_URL} (auth={config.MCP_AUTH})\n")
 
     scripted = [d.strip() for d in decision.split(",") if d.strip()] if decision else []
     payload = await stream(graph, {"request": request}, cfg)

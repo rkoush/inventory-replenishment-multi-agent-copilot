@@ -37,7 +37,27 @@ GROQ_MAX_RETRIES = int(os.getenv("GROQ_MAX_RETRIES", "4"))  # SDK retries 429/5x
 MCP_HOST = os.getenv("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", f"http://localhost:{MCP_PORT}/mcp")
-MCP_AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")  # empty = auth disabled
+MCP_AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")  # legacy single static token (all scopes)
+# Auth mode: none | static (MCP_AUTH_TOKEN) | jwt (RS256 role tokens, see scripts/mint_tokens.py)
+MCP_AUTH = (os.getenv("MCP_AUTH", "") or ("static" if MCP_AUTH_TOKEN else "none")).lower()
+SECRETS_DIR = Path(os.getenv("REPLENISHIQ_SECRETS", ROOT / ".secrets"))  # gitignored
+MCP_JWT_ISSUER = os.getenv("MCP_JWT_ISSUER", "replenishiq-local-idp")
+MCP_JWT_AUDIENCE = os.getenv("MCP_JWT_AUDIENCE", "replenishiq-mcp")
+MCP_JWT_PUBLIC_KEY_FILE = Path(os.getenv("MCP_JWT_PUBLIC_KEY_FILE", "") or SECRETS_DIR / "jwt_public.pem")
+
+
+def role_token(role: str) -> str:
+    """JWT for a role: env MCP_<ROLE>_TOKEN, else SECRETS_DIR/tokens.env (written by mint_tokens.py)."""
+    key = f"MCP_{role.upper()}_TOKEN"
+    if os.getenv(key):
+        return os.environ[key]
+    path = SECRETS_DIR / "tokens.env"
+    if path.exists():
+        for line in path.read_text().splitlines():
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip()
+    return ""
 
 # Planning defaults (used when the request or the policy docs don't say otherwise)
 DEFAULT_HORIZON_DAYS = 7

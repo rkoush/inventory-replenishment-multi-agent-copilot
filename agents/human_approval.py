@@ -59,11 +59,12 @@ def make_place_order(client: Any = None):
         lines = [{"sku": l["sku"], "quantity": l["order_qty"]} for l in state["order_plan"]["lines"] if l["order_qty"] > 0]
         if not lines:
             return {"trace": ["place_order: nothing to order"]}
-        async with mcp_session(client) as tools:
+        # Only reached after human approval; uses the APPROVER credential (scope po:write).
+        async with mcp_session(client, role="approver") as tools:
             po = await tools.call("create_purchase_order", store=state["store"], lines=lines,
                                   approved_by=state["approval"]["approver"],
                                   note=state["approval"].get("comment", ""))
         return {"purchase_order": po,
-                "trace": [f"place_order: MCP create_purchase_order -> {po['po_id']} (${po['total_cost']:,.2f})"]}
+                "trace": [f"place_order: MCP create_purchase_order as {tools.auth} -> {po['po_id']} (${po['total_cost']:,.2f})"]}
 
     return place_order

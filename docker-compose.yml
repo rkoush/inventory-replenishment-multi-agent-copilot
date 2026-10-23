@@ -5,7 +5,10 @@ services:
     environment:
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8000"
+      MCP_AUTH: ${MCP_AUTH:-}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    # MCP_AUTH=jwt: run `python -m scripts.mint_tokens` on the host, then uncomment in both services:
+    # volumes: ["riq-data:/app/data", "./.secrets:/app/.secrets:ro"]
     ports: ["8000:8000"]
     volumes: ["riq-data:/app/data"]
     healthcheck:
@@ -18,6 +21,7 @@ services:
       mcp: { condition: service_healthy }
     environment:
       MCP_SERVER_URL: http://mcp:8000/mcp
+      MCP_AUTH: ${MCP_AUTH:-}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}

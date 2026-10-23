@@ -10,7 +10,7 @@ from agents.state import ReplenishState
 def make_inventory_agent(client: Any = None):
     async def inventory_agent(state: ReplenishState) -> dict[str, Any]:
         store = state["store"]
-        async with mcp_session(client) as tools:
+        async with mcp_session(client, role="planner") as tools:
             stock = (await tools.call("list_store_inventory", store=store))["items"]
             low = (await tools.call("list_low_stock", store=store, days_of_cover=7))["items"]
             for item in stock:
@@ -21,7 +21,7 @@ def make_inventory_agent(client: Any = None):
             "inventory": stock,
             "low_stock": low,
             "trace": [
-                f"inventory_agent: MCP tools available {tools.names}",
+                f"inventory_agent: MCP as {tools.auth}; tools visible {tools.names}",
                 f"inventory_agent: {len(stock)} SKUs at {store}; {len(tools.calls)} tool calls; "
                 f"under 7 days of cover: {low_txt}",
             ],

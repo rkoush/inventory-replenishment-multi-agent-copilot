@@ -6,7 +6,8 @@ SQLite connection), so in production you could run several replicas behind a
 load balancer.
 
 Run:  python -m mcp_servers.inventory_server          # http://localhost:8000/mcp
-Auth: set MCP_AUTH_TOKEN to require `Authorization: Bearer <token>`.
+Auth: MCP_AUTH=jwt -> RS256 role tokens with per-tool scopes (see mcp_servers/auth.py and
+      scripts/mint_tokens.py); MCP_AUTH_TOKEN -> one static token; default: no auth.
 """
 from __future__ import annotations
 
@@ -26,27 +27,14 @@ from starlette.requests import Request  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
 
 import config  # noqa: E402
+from mcp_servers.auth import build_auth  # noqa: E402
 
 SKU_RE = re.compile(r"^[A-Z]{2,4}-\d{3}$")
 STORE_RE = re.compile(r"^S\d{3}$")
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
 
 
-def _auth():
-    """Optional static bearer-token auth (demo-grade; use OAuth 2.1 / an IdP in production)."""
-    if not config.MCP_AUTH_TOKEN:
-        return None
-    from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
-
-    return StaticTokenVerifier(
-        tokens={
-            config.MCP_AUTH_TOKEN: {
-                "client_id": "replenishiq-agents",
-                "scopes": ["inventory:read", "orders:write"],
-            }
-        }
-    )
-
+AUTH, AUTH_MIDDLEWARE = build_auth()
 
 mcp = FastMCP(
     name="replenishiq-inventory",
@@ -55,7 +43,8 @@ mcp = FastMCP(
         "Read tools are side-effect free. create_purchase_order writes data and must only be "
         "called after a human has approved the order."
     ),
-    auth=_auth(),
+    auth=AUTH,
+    middleware=AUTH_MIDDLEWARE,
 )
 
 
@@ -193,10 +182,26 @@ def create_purchase_order(store: str, lines: list[dict[str, Any]], approved_by: 
     return {"po_id": po_id, "store": store, "lines": len(lines), "total_cost": round(total, 2), "status": "submitted"}
 
 
+@mcp.tool(annotations=READ_ONLY)
+def list_purchase_orders(store: str = "", limit: int = 20) -> dict[str, Any]:
+    """Recent purchase orders (newest first), optionally for one store: id, time, approver, lines, total."""
+    if not 1 <= limit <= 100:
+        raise ToolError("limit must be between 1 and 100.")
+    where, params = ("WHERE store = ?", (_check_store(store),)) if store.strip() else ("", ())
+    rows = _rows(
+        f"""SELECT po_id, MIN(created_at) AS created_at, store, approved_by, COUNT(*) AS lines,
+                   SUM(quantity) AS units, ROUND(SUM(quantity * unit_cost), 2) AS total_cost
+            FROM purchase_orders {where} GROUP BY po_id, store, approved_by
+            ORDER BY created_at DESC LIMIT ?""",
+        (*params, limit),
+    )
+    return {"count": len(rows), "orders": rows}
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     """Liveness probe for notebooks, Docker and Kubernetes."""
-    return JSONResponse({"status": "ok", "db": config.DB_PATH.exists()})
+    return JSONResponse({"status": "ok", "db": config.DB_PATH.exists(), "auth": config.MCP_AUTH})
 
 
 if __name__ == "__main__":
