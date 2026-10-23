@@ -1,0 +1,29 @@
+# docker compose up -d mcp && docker compose run --rm app
+services:
+  mcp:
+    build: .
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    ports: ["8000:8000"]
+    volumes: ["riq-data:/app/data"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      retries: 10
+  app:
+    build: .
+    depends_on:
+      mcp: { condition: service_healthy }
+    environment:
+      MCP_SERVER_URL: http://mcp:8000/mcp
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      GROQ_ROUTER_MODEL: ${GROQ_ROUTER_MODEL:-}
+    stdin_open: true
+    tty: true
+    command: ["python", "-m", "app.run_demo"]
+volumes:
+  riq-data:
