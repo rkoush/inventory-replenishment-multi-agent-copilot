@@ -3,9 +3,9 @@
 1. `plan_facts()` computes the facts: counts, units, $ amounts, %, top orders, shortfalls.
 2. `facts_paragraph()` renders those facts as fixed template sentences.
 3. The LLM gets the facts JSON and writes a 2-4 sentence "why" paragraph.
-   `check_numbers()` rejects that paragraph if it has any number that isn't in the facts,
-   a $ amount without "$", a share written as a fraction, or "all SKUs ordered" when some
-   SKUs got qty 0. A rejected or failed reply falls back to `rules.explain_why()`.
+   `check_numbers()` parses each number as one token ($4,000 / 3,999.90 / 23.1%), ignores
+   SKU/store/PO codes, and rejects the paragraph if a number doesn't match a fact
+   numerically, a count word is wrong, or it says "all SKUs ordered" when some got qty 0. A rejected or failed reply falls back to `rules.explain_why()`.
 """
 from __future__ import annotations
 
@@ -93,19 +93,46 @@ def facts_paragraph(f: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------- number check
-_ID = re.compile(r"\b[A-Z]{1,4}-?\d+\b")  # SKU / store / PO ids like HH-002, S001
-_NUM = re.compile(r"(\$\s?)?(\d[\d,]*(?:\.\d+)?)\s*(%|percent\b)?", re.I)
+# LLMs (gpt-oss in particular) often write U+2011 non-breaking hyphens ("GRO\u2011004"),
+# dashes, and narrow/no-break spaces ("$4\u202f000"); normalize before tokenizing.
+_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe63\uff0d"), "-")
+_SPACES = dict.fromkeys(map(ord, "\u00a0\u2007\u2009\u202f"), " ")
+# Ids are removed before extracting numbers: PO ids, SKU / store codes like GRO-001, HH-002, S001.
+_ID = re.compile(r"\bPO-\d{8}-[A-Z0-9]+\b|\b[A-Z]{1,4}-?\d+\b")
+# A number is one whole token: 1,234,567.89 | 3999.90 | 23.1 | 8 (never "004," or "4" + "000").
+_NUM = re.compile(r"(?<!\d)(?<!\d[.,])(\$\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?![\d])(\s*(?:%|percent\b|per cent\b))?",
+                  re.I)
+# Count words that must match a count in the facts. "one" is exempt: it is mostly not a count
+# ("one reason", "the one SKU"). Digits are never exempt, even small ones (see check_numbers).
+NUMBER_WORDS_CHECKED = {w: v for w, v in NUMBER_WORDS.items() if w != "one"}
+
+
+def _normalize(text: str) -> str:
+    text = re.sub("(?<=\\d)[\u00a0\u2009\u202f](?=\\d{3}(?!\\d))", ",", text)  # "4\u202f000" -> "4,000"
+    return text.translate(_DASHES).translate(_SPACES)
+
+
+def _tokens(text: str):
+    """(raw, value, kind, decimals) for each number in text; kind is 'money' | 'pct' | 'plain'."""
+    for mm in _NUM.finditer(_ID.sub(" ", _normalize(text))):
+        digits = mm.group(2)
+        decimals = len(digits.partition(".")[2])
+        kind = "money" if mm.group(1) else "pct" if mm.group(3) else "plain"
+        yield mm.group(0).strip(), float(digits.replace(",", "")), kind, decimals
 
 
 def _values(f: dict[str, Any]) -> tuple[set[float], set[float], set[float]]:
-    """(money, percent, plain) values that appear in the facts."""
+    """(money, percent, plain) values in the facts. Plain includes counts and the length of
+    every list/dict in the facts (e.g. "3 largest orders", "2 SKUs short")."""
     m, p, n = set(), set(), set()
 
     def walk(v: Any) -> None:
         if isinstance(v, dict):
+            n.add(float(len(v)))
             for x in v.values():
                 walk(x)
         elif isinstance(v, list):
+            n.add(float(len(v)))
             for x in v:
                 walk(x)
         elif isinstance(v, bool):
@@ -113,32 +140,44 @@ def _values(f: dict[str, Any]) -> tuple[set[float], set[float], set[float]]:
         elif isinstance(v, (int, float)):
             n.add(float(v))
         elif isinstance(v, str):
-            for mm in _NUM.finditer(_ID.sub(" ", v)):
-                val = float(mm.group(2).replace(",", ""))
-                (m if mm.group(1) else p if mm.group(3) else n).add(val)
+            for _, val, kind, _ in _tokens(v):
+                {"money": m, "pct": p, "plain": n}[kind].add(val)
 
     walk(f)
     return m, p, n
 
 
+def _close(x: float, values: set[float], decimals: int | None = None) -> bool:
+    """x equals a fact; with `decimals`, a fact rounded to that many places also counts (23 for 23.1%)."""
+    return any(abs(x - v) < 1e-6 or (decimals is not None and abs(x - round(v, decimals)) < 1e-6) for v in values)
+
+
 def check_numbers(text: str, f: dict[str, Any]) -> list[str]:
-    """Problems with numbers in LLM text vs the facts. An empty list means OK."""
+    """Problems with numbers in LLM text vs the facts. An empty list means OK.
+
+    Every number is parsed as one token ("$3,999.90", "23.1%", "8") and compared numerically:
+    - "$X" must equal a $ fact to the cent ("$4,000" == "$4,000.00").
+    - "X%" must equal a % fact, or that fact rounded to the digits written ("23%" for 23.1%).
+    - a bare X may be any fact value: a count, units, a $ amount without "$", a % as 30 or 0.3.
+    Small integers are NOT exempt: miscounts ("9 of 10 SKUs") are a typical LLM error.
+    """
     m, p, n = _values(f)
+    fractions = {v / 100 for v in p}
     problems = []
-    for mm in _NUM.finditer(_ID.sub(" ", text)):
-        raw, val = mm.group(0).strip(), float(mm.group(2).replace(",", ""))
-        if mm.group(1):
-            ok = val in m
-        elif mm.group(3):
-            ok = val in p
+    for raw, val, kind, decimals in _tokens(text):
+        if kind == "money":
+            ok = _close(val, m)
+        elif kind == "pct":
+            ok = _close(val, p, decimals)
         else:
-            ok = val in n and val not in m  # a bare money amount means a dropped "$"
+            ok = _close(val, n | m | p | fractions)
         if not ok:
             problems.append(f"number not in facts: {raw!r}")
-    for w in re.findall(r"\b(" + "|".join(NUMBER_WORDS) + r")\b", text, flags=re.I):
-        if float(NUMBER_WORDS[w.lower()]) not in n:
+    norm = _normalize(text)
+    for w in re.findall(r"\b(" + "|".join(NUMBER_WORDS_CHECKED) + r")\b", norm, flags=re.I):
+        if float(NUMBER_WORDS_CHECKED[w.lower()]) not in n:
             problems.append(f"count word not in facts: {w!r}")
-    if f["n_skus_zero"] and re.search(r"\b(all|every)\b[^.]*\bSKUs?\b[^.]*\b(ordered|replenished)\b", text, re.I):
+    if f["n_skus_zero"] and re.search(r"\b(all|every)\b[^.]*\bSKUs?\b[^.]*\b(ordered|replenished)\b", norm, re.I):
         problems.append("claims all SKUs are ordered, but some have qty 0")
     return problems
 
