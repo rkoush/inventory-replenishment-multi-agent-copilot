@@ -69,7 +69,7 @@ Each order line reports what limited it (shelf capacity, concentration limit, or
 
 The notebook also runs **without a key**. Rule-based stand-ins replace the 3 LLM steps (offline mode), and the rest of the system is identical.
 
-### Local
+### Run locally (plain Python)
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -83,7 +83,13 @@ python -m pytest -q
 ```
 Turn on MCP auth by setting the same `MCP_AUTH_TOKEN` for both the server and the client. The client then sends `Authorization: Bearer <token>`.
 
-Docker: `docker compose up -d mcp && docker compose run --rm app`
+### Run locally with Docker (optional)
+Colab never uses the Dockerfile; it only matters when you run Docker yourself. Locally, the MCP server and the agent app each run in their own container, the same way they would scale separately in production:
+```bash
+cp .env.example .env            # add GROQ_API_KEY (optional)
+docker compose up -d mcp        # MCP server on http://localhost:8000/mcp
+docker compose run --rm app     # runs the demo against the containerized MCP server
+```
 
 ## Staying within Groq's free tier
 The Groq free tier needs **no billing or credits**, but it has **rate limits** (requests and tokens per minute and per day, which vary by model). This project is built to stay well under them:
