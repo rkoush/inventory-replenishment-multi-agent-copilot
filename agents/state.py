@@ -25,6 +25,7 @@ class ReplenishState(TypedDict, total=False):
     approval: dict[str, Any]
     purchase_order: dict[str, Any]
     report: str
+    report_facts: dict[str, Any]
 
     # --- append-only audit trail ---
     trace: Annotated[list[str], operator.add]

@@ -28,7 +28,7 @@ flowchart TD
     H -->|revise budget| OPT
     H -->|approve| PO[Place order]
     H -->|reject| R
-    PO --> R[Report<br/>LLM narrative + deterministic table]
+    PO --> R[Report<br/>code-computed facts + LLM 'why' + table]
     INV <-.MCP streamable HTTP.-> MCP[(FastMCP inventory server<br/>SQLite)]
     DEM <-.MCP.-> MCP
     PO <-.create_purchase_order.-> MCP
@@ -94,8 +94,8 @@ docker compose run --rm app     # runs the demo against the containerized MCP se
 ## Staying within Groq's free tier
 The Groq free tier needs **no billing or credits**, but it has **rate limits** (requests and tokens per minute and per day, which vary by model). This project is built to stay well under them:
 
-- **3 LLM calls per run:** supervisor plan, policy extraction, and report narrative. Revise loops re-run only the solver, so they make no extra LLM calls. Forecasting, optimization, and tool calls never use the LLM.
-- **Short prompts.** The policy agent sends only the ~6 retrieved policy sections (about 1.3k characters). The report gets a compact JSON summary of the plan. Sales history never reaches the LLM.
+- **3 LLM calls per run:** supervisor plan, policy extraction, and the report's short "why" explanation. Revise loops re-run only the solver, so they make no extra LLM calls. Forecasting, optimization, and tool calls never use the LLM.
+- **Short prompts.** The policy agent sends only the ~6 retrieved policy sections (about 1.3k characters). The report gets a compact JSON block of precomputed facts. Sales history never reaches the LLM.
 - **Models:** `GROQ_MODEL` defaults to `openai/gpt-oss-120b` (policy extraction and report). `GROQ_ROUTER_MODEL` defaults to `openai/gpt-oss-20b` (supervisor plan). Both can be overridden with env vars. Other free-tier options include `qwen/qwen3.8-27b` and `meta-llama/llama-4-scout-17b-16e-instruct`. Groq retires models regularly (`llama-3.3-70b-versatile` and `llama-3.1-8b-instant` were shut down on Aug 16, 2026), so check https://console.groq.com/docs/deprecations if you get a `NotFoundError`.
 - **Reasoning models:** gpt-oss and qwen3 reason before answering, and reasoning tokens count toward `max_tokens`. The client sets `reasoning_effort="low"` (`GROQ_REASONING_EFFORT`) and hides the reasoning: `include_reasoning=False` for gpt-oss, `reasoning_format="hidden"` for qwen3. Other models get neither parameter. Structured steps use Groq JSON-schema structured outputs (`strict` mode with constrained decoding on gpt-oss). Other models use tool calling.
 - `max_tokens=1024` (`GROQ_MAX_TOKENS`), `temperature=0`, and `max_retries=4`. The Groq SDK backs off exponentially on 429 and 5xx errors.
@@ -106,6 +106,7 @@ The Groq free tier needs **no billing or credits**, but it has **rate limits** (
 ## Design decisions and tradeoffs
 - **Supervisor with deterministic guardrails rather than free-form agent chat.** The LLM proposes a plan once. Code then validates the store, budget, and horizon, fixes the dependency order, routes to the first worker whose output is missing, and caps the run at 12 steps. This makes runs predictable, cheap, and easy to debug. The cost is less flexibility than a ReAct loop.
 - **The LLM never produces numbers.** Order quantities come from the MILP, forecasts from pandas, and stock from MCP. Policy numbers the LLM extracts are **grounded**: each value must appear literally in the retrieved text and fall in a sane range. Otherwise the rule-based value is used and the run logs a warning. Tests cover this with a deliberately wrong LLM.
+- **Report numbers are computed in code.** `plan_facts()` computes every count, $ amount, and % in the report (SKUs ordered vs. qty 0, units, cost, budget, utilization, top orders, shortfalls), and a template renders them. The LLM writes only a 2-4 sentence "why" paragraph. `check_numbers()` rejects that paragraph if it contains a number not in the facts, a $ amount without the `$`, a share written as a fraction (e.g. `0.3`), or "all SKUs ordered" when some got qty 0. A rejected paragraph is replaced by a rule-based explanation and logged as a warning.
 - **MCP over HTTP with a stateless server.** Tools sit behind a protocol boundary, so other agents or IDEs can reuse them, and the server can scale and be secured on its own. Read and write tools are separated, and the server enforces its own business rules.
 - **Human in the loop at the only side effect.** `interrupt()` pauses the graph with a compact approval payload. MemorySaver keeps the state, and `Command(resume=...)` continues with approve, reject, or revise (new budget, re-optimize).
 - **Simple, explainable forecast.** Seasonal exponential smoothing with a backtest WAPE is enough to demo the pipeline. Swapping in a stronger model (for example LightGBM or a hierarchical forecast) would only change `agents/forecasting.py`.

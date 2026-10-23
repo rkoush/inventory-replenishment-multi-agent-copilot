@@ -52,26 +52,28 @@ def extract_policy(context: str) -> dict[str, Any]:
     }
 
 
-def explain_plan(plan: dict[str, Any]) -> str:
-    t = plan["totals"]
-    ordered = sorted((l for l in plan["lines"] if l["order_qty"] > 0), key=lambda l: -l["order_cost"])
-    short = [l for l in plan["lines"] if l["shortfall_vs_target"] > 0]
-    top = ", ".join(f"{l['sku']} ({l['order_qty']} units, ${l['order_cost']:,.2f})" for l in ordered[:3])
-    msg = (
-        f"The plan orders {len(ordered)} SKUs for ${t['total_cost']:,.2f} of a ${t['budget']:,.2f} budget "
-        f"({t['budget_utilization_pct']}% used). Largest orders: {top or 'none'}. "
-    )
-    if short:
-        msg += "Still below target after this order: " + ", ".join(
-            f"{l['sku']} (short {l['shortfall_vs_target']} units)" for l in short
-        ) + ". "
-    else:
-        msg += "Every SKU reaches its order-up-to target. "
-    return msg + "All quantities come from the MILP solver and respect case packs, MOQs and shelf capacity."
+def explain_why(facts: dict[str, Any]) -> str:
+    """Number-free 'why' paragraph built from the report facts (offline LLM + fallback)."""
+    by_reason: dict[str, list[str]] = {}
+    for x in facts["shortfalls"]:
+        for r in x["binding"] or ["solver choice"]:
+            by_reason.setdefault(r, []).append(x["sku"])
+    parts = [f"{r} limited {', '.join(skus)}" for r, skus in by_reason.items()]
+    msg = ("The solver covers lead-time demand first and weights Grocery higher. "
+           + (("Below target, " + "; ".join(parts) + ". ") if parts else ""))
+    if facts["promotions"]:
+        msg += f"Promotions on {', '.join(facts['promotions'])} raised their targets. "
+    at_target = [z["sku"] for z in facts["zero_qty_skus"] if z["reason"] == "already at target"]
+    idle = [z["sku"] for z in facts["zero_qty_skus"] if z["reason"] != "already at target"]
+    if at_target:
+        msg += f"{', '.join(at_target)} already had enough stock, so {'they' if len(at_target) > 1 else 'it'} got no order. "
+    if idle:
+        msg += f"{', '.join(idle)} got no order because spend went to SKUs with less cover. "
+    return msg + "All quantities respect case packs, MOQs and shelf capacity."
 
 
-def extract_json_block(text: str) -> dict[str, Any]:
-    """Pull the JSON payload out of a prompt built by report_node."""
-    start = text.index("<plan_json>") + len("<plan_json>")
-    end = text.index("</plan_json>")
+def extract_json_block(text: str, tag: str = "facts_json") -> dict[str, Any]:
+    """Pull the JSON payload out of a prompt built by the report node."""
+    start = text.index(f"<{tag}>") + len(f"<{tag}>")
+    end = text.index(f"</{tag}>")
     return json.loads(text[start:end])

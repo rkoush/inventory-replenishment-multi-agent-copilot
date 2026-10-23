@@ -68,7 +68,7 @@ class RuleBasedLLM:
         return RunnableLambda(run)
 
     def invoke(self, messages: list[BaseMessage] | str, **_: Any) -> AIMessage:
-        return AIMessage(content=rules.explain_plan(rules.extract_json_block(_last_text(messages))))
+        return AIMessage(content=rules.explain_why(rules.extract_json_block(_last_text(messages))))
 
 
 def _last_text(messages: list[BaseMessage] | str) -> str:
