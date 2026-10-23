@@ -228,3 +228,7 @@ data/*.db
 
 # Local JWT keys and tokens (scripts/mint_tokens.py) - never commit
 .secrets/
+
+# Chainlit runtime files (config/translations are generated on first run)
+.chainlit/
+.files/

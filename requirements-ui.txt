@@ -1,0 +1,4 @@
+# Optional chat UI (ui/chainlit_app.py), kept separate so the core install stays lean.
+# Tested with Python 3.12 together with requirements.txt (Oct 2026).
+-r requirements.txt
+chainlit~=2.12.0

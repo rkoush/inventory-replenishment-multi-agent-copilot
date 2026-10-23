@@ -44,9 +44,10 @@ flowchart TD
 | Forecast | Day-of-week seasonality plus exponential smoothing, with a 7-day backtest WAPE | `agents/forecasting.py` |
 | Optimization | PuLP + CBC MILP | `agents/milp.py` |
 | LLM | Groq via `langchain-groq` (default `openai/gpt-oss-120b`, router `openai/gpt-oss-20b`) | `agents/llm.py` |
+| UI (optional) | Chainlit chat with steps per node and approve/reject/revise buttons | `ui/chainlit_app.py` |
 
 ### MCP tools
-`get_stock`, `list_store_inventory`, `list_low_stock`, `get_sales_history`, `get_supplier_terms` are read-only (annotated `readOnlyHint`). `create_purchase_order` is the only write tool, and the graph calls it only after a human approves. The server checks MOQ and case-pack rules again on its own and does not trust the agent.
+`get_stock`, `list_store_inventory`, `list_low_stock`, `get_sales_history`, `get_supplier_terms` are read-only (annotated `readOnlyHint`), and so is `list_purchase_orders` (PO log for auditors). `create_purchase_order` is the only write tool, and the graph calls it only after a human approves. The server checks MOQ and case-pack rules again on its own and does not trust the agent.
 
 ### The optimization model
 For each SKU *i*, the model chooses an integer number of cases `c_i` (order quantity `q_i = pack_i · c_i`) and a binary order flag `y_i`.
@@ -65,7 +66,7 @@ Each order line reports what limited it (shelf capacity, concentration limit, or
 ### Colab (recommended)
 1. Open `notebooks/ReplenishIQ_demo.ipynb` in Colab.
 2. Add `GROQ_API_KEY` under **Secrets** (key icon) and turn on notebook access. Get a free key at https://console.groq.com.
-3. Run all cells. The notebook installs requirements, generates data, builds the index, starts the MCP server as a background process, runs the graph to the approval interrupt, revises, approves, and shows the report and the PO.
+3. Run all cells. The notebook installs requirements, generates data, builds the index, starts the MCP server as a background process, runs the graph to the approval interrupt, revises, approves, and shows the report and the PO. Later sections demo JWT roles and open the Chainlit chat UI.
 
 The notebook also runs **without a key**. Rule-based stand-ins replace the 3 LLM steps (offline mode), and the rest of the system is identical.
 
@@ -87,6 +88,20 @@ python -m scripts.mint_tokens                            # .secrets/ (gitignored
 MCP_AUTH=jwt python -m mcp_servers.inventory_server &
 MCP_AUTH=jwt python -m app.run_demo --offline --decision approve
 ```
+
+### Chat UI (Chainlit, optional)
+```bash
+pip install -r requirements-ui.txt          # chainlit~=2.12.0 on top of the core requirements
+chainlit run ui/chainlit_app.py --port 8501 # http://localhost:8501 (Chainlit's default 8000 is the MCP server's port)
+```
+If the MCP server isn't already answering at `MCP_SERVER_URL`, the app starts it, and builds the demo data and index first if they're missing. Each graph node shows up as a step with its trace. The plan arrives as a table with **Approve / Reject / Revise** buttons; Revise asks for a new budget. The buttons map to the same `Command(resume=...)` payloads as the CLI. The final message shows the report, the PO id, and which MCP role token each step used. Set `MCP_AUTH=jwt` (after `python -m scripts.mint_tokens`) to see planner vs. approver tokens, and set `RIQ_OFFLINE=1` to force the rule-based LLM stand-ins.
+
+**Chainlit on Colab.** The notebook (section 10) starts the app in the background with `chainlit run ui/chainlit_app.py --port 8501 --headless` and opens it with `google.colab.output.serve_kernel_port_as_window(8501)`. It also prints the `google.colab.kernel.proxyPort(8501)` link; `serve_kernel_port_as_iframe(8501)` embeds the app in the notebook instead. Caveats:
+- Colab's port proxy doesn't reliably pass WebSocket upgrades (see googlecolab/colabtools#2529 and #4270), and Chainlit uses Socket.IO. The notebook sets `CHAINLIT_TRANSPORTS=polling`, which the app copies into Chainlit's `project.transports`, so the browser uses HTTP long-polling. That's slower, but it works through plain HTTP proxies.
+- `serve_kernel_port_as_window` warns that browsers may block it. Use the printed proxy link or the iframe if no tab opens.
+- The proxied app lives at the root of its own `*.colab.googleusercontent.com` origin, so `--root-path` isn't needed. Use `--root-path /prefix` (and `CHAINLIT_URL` for OAuth callbacks) only behind a reverse proxy that mounts the app under a path.
+- Fallback: an optional `cloudflared tunnel --url http://127.0.0.1:8501` quick-tunnel cell (no account) gives a temporary public `trycloudflare.com` URL with working WebSockets. Anyone with the link can reach the app, so stop it when you're done. It needs outbound TCP/UDP 7844, which some locked-down networks block.
+- The app and its MCP server live only as long as the Colab runtime does.
 
 ### Run locally with Docker (optional)
 Colab never uses the Dockerfile; it only matters when you run Docker yourself. Locally, the MCP server and the agent app each run in their own container, the same way they would scale separately in production:
@@ -157,6 +172,7 @@ rag/           index builder + retriever
 scripts/       synthetic data generator, local JWT minting
 data/policies/ policy markdown docs (RAG corpus)
 app/           CLI demo
+ui/            Chainlit chat UI
 notebooks/     Colab demo
-tests/         optimizer, MCP, JWT scopes, report checks, end-to-end offline graph
+tests/         optimizer, MCP, JWT scopes, report checks, UI loop, end-to-end offline graph
 ```

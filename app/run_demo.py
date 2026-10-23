@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import httpx  # noqa: E402
 from langgraph.types import Command  # noqa: E402
 
 import config  # noqa: E402
@@ -89,6 +90,11 @@ def main() -> None:
     ap.add_argument("--offline", action="store_true", help="use the rule-based stand-in instead of Groq")
     ap.add_argument("--decision", help="non-interactive decisions, comma-separated, e.g. approve | reject | revise:4000,approve")
     args = ap.parse_args()
+    health = config.MCP_SERVER_URL.rsplit("/mcp", 1)[0] + "/health"
+    try:
+        httpx.get(health, timeout=2).raise_for_status()
+    except httpx.HTTPError:
+        sys.exit(f"MCP server not reachable at {health}. Start it first: python -m mcp_servers.inventory_server")
     asyncio.run(run(args.request, args.offline, args.decision))
 
 
