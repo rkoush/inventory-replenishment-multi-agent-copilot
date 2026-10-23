@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ReplenishIQ
+.env
+chroma_db/
+*.sqlite
+*.db
+data/*.db

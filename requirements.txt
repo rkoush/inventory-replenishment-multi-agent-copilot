@@ -1,0 +1,26 @@
+# ReplenishIQ - tested together on Python 3.12 (Oct 2026). Ranges are deliberately
+# loose for pandas/numpy so Colab's preinstalled versions are reused.
+
+# Agents / LLM
+langgraph~=1.2.16
+langchain-core~=1.7.0
+langchain-groq~=1.1.3
+langchain-mcp-adapters~=0.3.2
+
+# MCP server (Streamable HTTP)
+fastmcp~=3.4.11
+
+# RAG (Chroma's built-in ONNX all-MiniLM-L6-v2 embeddings - no torch, no paid API)
+chromadb~=1.5.9
+
+# Optimisation: PuLP 3.x bundles the CBC solver. PuLP 4 changed the modelling API - keep <4.
+pulp>=3.3.2,<4
+
+# Data
+pandas>=2.1
+numpy>=1.26
+
+# Utilities
+httpx>=0.27
+python-dotenv>=1.0
+pytest>=8.0
